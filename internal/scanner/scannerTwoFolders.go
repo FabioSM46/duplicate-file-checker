@@ -11,153 +11,108 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-// ProcessTwoFolders compares files between the first directory and the second directory, hashes files, and identifies duplicates
-func ProcessTwoFolders(dir1, dir2, hashMethod string, dryRun bool, logFormat string) {
-	// Scan the first directory for files
-	files1, err := ScanDirectory(dir1)
+// ProcessTwoFolders checks for duplicate files between two directories
+func ProcessTwoFolders(folder1, folder2, hashMethod string, dryRun bool, logFormat string) {
+	// Scan both directories for files
+	files1, err := ScanDirectory(folder1)
 	if err != nil {
-		fmt.Printf("Error scanning directory %s: %v\n", dir1, err)
+		fmt.Printf("Error scanning directory %s: %v\n", folder1, err)
 		return
 	}
-
-	// Scan the second directory for files
-	files2, err := ScanDirectory(dir2)
+	files2, err := ScanDirectory(folder2)
 	if err != nil {
-		fmt.Printf("Error scanning directory %s: %v\n", dir2, err)
+		fmt.Printf("Error scanning directory %s: %v\n", folder2, err)
 		return
 	}
 
 	// Set up parallel processing
 	var wg sync.WaitGroup
-	resultChan := make(chan map[string]string, len(files2))
+	var mu sync.Mutex // Mutex to safely write to maps in goroutines
 
-	// Create progress bar for the second directory
-	bar := progressbar.NewOptions(len(files2), progressbar.OptionSetDescription("Hashing files in second folder"), progressbar.OptionSetWidth(50))
+	// Create progress bar
+	bar := progressbar.NewOptions(len(files1)+len(files2), progressbar.OptionSetDescription("Hashing files"), progressbar.OptionSetWidth(50))
 
-	// Start hashing files from the second directory in parallel
-	for _, filePath := range files2 {
-		wg.Add(1)
-		go func(path string) {
-			defer wg.Done()
-			// Calculate the hash for each file in the second directory
-			hashValue, err := hashing.HashFile(path, hashMethod)
-			if err != nil {
-				fmt.Printf("Error hashing file %s: %v\n", path, err)
-				return
-			}
+	// Hash maps to store hash -> file paths
+	hashMap1 := make(map[string][]string) // Now stores multiple file paths per hash
+	hashMap2 := make(map[string][]string) // Now stores multiple file paths per hash
 
-			// Send the hash value along with the file path to the result channel
-			resultChan <- map[string]string{hashValue: path}
+	// Function to hash files and store results in the appropriate map
+	hashFiles := func(files []string, hashMap map[string][]string) {
+		for _, filePath := range files {
+			wg.Add(1)
+			go func(path string) {
+				defer wg.Done()
+				hashValue, err := hashing.HashFile(path, hashMethod)
+				if err != nil {
+					fmt.Printf("Error hashing file %s: %v\n", path, err)
+					return
+				}
 
-			// Increment progress bar after hashing each file
-			bar.Add(1)
-		}(filePath)
-	}
+				mu.Lock()
+				hashMap[hashValue] = append(hashMap[hashValue], path) // Store all file paths for the same hash
+				mu.Unlock()
 
-	// Close resultChan after all goroutines are done
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// Collect results and process them
-	duplicates := make(map[string][]string)
-	for result := range resultChan {
-		// Each result contains a hash and the corresponding file path
-		for hash, filePath := range result {
-			duplicates[hash] = append(duplicates[hash], filePath)
+				bar.Add(1)
+			}(filePath)
 		}
 	}
 
-	// Prepare a slice to collect log data with the `deleted` and `hash` keys
+	// Start hashing for both folders
+	hashFiles(files1, hashMap1)
+	hashFiles(files2, hashMap2)
+
+	// Wait for all hashing goroutines to complete
+	wg.Wait()
+
+	// Prepare a slice to collect log data
 	logData := []map[string]interface{}{}
 
-	// Now check for each file in the first directory and compare with the second directory
-	for _, file1 := range files1 {
-		// Calculate the hash for each file in the first directory
-		hashValue, err := hashing.HashFile(file1, hashMethod)
-		if err != nil {
-			fmt.Printf("Error hashing file %s: %v\n", file1, err)
-			continue
-		}
+	// Ask if the user wants to delete all duplicates
+	var deleteAllOption string
+	fmt.Printf("Do you want to delete all duplicates? (y/n): ")
+	fmt.Scanln(&deleteAllOption)
+	deleteAllOption = strings.ToLower(deleteAllOption)
 
-		// Check if any file in the second directory has the same hash
-		if filesWithSameHash, found := duplicates[hashValue]; found {
-			// If a duplicate is found, it means there is a file in the second directory that matches
-			fmt.Printf("Duplicate file found in second directory for file: %s\n", file1)
-			for _, file2 := range filesWithSameHash {
-				// Skip the first file, as it's considered the original (the one we're comparing)
-				if file2 == file1 {
-					continue
-				}
+	// Keep track of deleted files to avoid double deletion
+	deletedFiles := make(map[string]bool)
 
-				fmt.Printf("  Duplicate: %s\n", file2)
+	// Handle duplicate detection and deletion if the user agrees
+	if deleteAllOption == "y" {
+		// Process duplicates in hashMap1 (first folder)
+		for hash, files1 := range hashMap1 {
+			if files2, exists := hashMap2[hash]; exists {
+				// Process each file in the first folder (files1) and check for duplicates in the second folder (files2)
+				for _, file1 := range files1 {
+					for _, file2 := range files2 {
+						// Only proceed if the duplicate from the second folder hasn't already been deleted
+						if _, alreadyDeleted := deletedFiles[file2]; !alreadyDeleted {
+							fmt.Printf("Duplicate found:\n  %s\n  %s\n", file1, file2)
 
-				// Prompt for file deletion from the second directory if not in dry-run mode
-				if !dryRun {
-					// Ask the user for action: y = delete, n = skip, all = delete all except the current one
-					fmt.Printf("Do you want to delete %s from the second folder? (y/n/all): ", file2)
-					var input string
-					fmt.Scanln(&input)
-					input = strings.ToLower(input)
-					deleted := false
-
-					// Handle different responses: delete, skip, or delete all duplicates
-					switch input {
-					case "y":
-						err := os.Remove(file2)
-						if err != nil {
-							fmt.Printf("Error deleting file %s: %v\n", file2, err)
-						} else {
-							fmt.Printf("File %s deleted from the second folder.\n", file2)
-							deleted = true
-						}
-					case "n":
-						fmt.Printf("File %s kept in the second folder.\n", file2)
-					case "all":
-						// Delete all files with this hash except the first one (file1)
-						for _, deleteFile := range filesWithSameHash {
-							if deleteFile == file1 {
-								continue // Skip the first file, which is considered the original
-							}
-
-							err := os.Remove(deleteFile)
-							if err != nil {
-								fmt.Printf("Error deleting file %s: %v\n", deleteFile, err)
+							if !dryRun {
+								// Delete the duplicate (file2) from the second folder
+								if err := os.Remove(file2); err == nil {
+									fmt.Printf("Deleted: %s\n", file2)
+									logData = append(logData, map[string]interface{}{"file": file2, "deleted": true, "hash": hash})
+									deletedFiles[file2] = true // Mark this file as deleted
+								} else {
+									fmt.Printf("Error deleting %s: %v\n", file2, err)
+								}
 							} else {
-								fmt.Printf("File %s deleted from the second folder.\n", deleteFile)
+								// Just log the duplicate files without deleting them in dry-run mode
+								logData = append(logData, map[string]interface{}{"file1": file1, "file2": file2, "deleted": false, "hash": hash})
 							}
 						}
-						deleted = true
-					default:
-						fmt.Println("Invalid option. Skipping deletion.")
 					}
-
-					// Log the deletion result with the hash included
-					logData = append(logData, map[string]interface{}{
-						"file":    file2,
-						"deleted": deleted,
-						"hash":    hashValue, // Add the hash here
-					})
-				} else {
-					// Dry run: Display the files that would be deleted
-					fmt.Println("[Dry Run] The following files would be deleted from the second folder:")
-					fmt.Printf("  %s\n", file2)
-
-					// Log the dry run result with deleted set to false and hash included
-					logData = append(logData, map[string]interface{}{
-						"file":    file2,
-						"deleted": false,
-						"hash":    hashValue, // Add the hash here
-					})
 				}
 			}
 		}
+	} else {
+		fmt.Println("Skipping deletion of duplicates.")
 	}
 
-	// Log the results in the desired format (e.g., JSON, CSV)
+	// Log results
 	logger.WriteLog(logData, logFormat)
 
-	// Wait for progress bar to complete before exiting
+	// Finish progress bar
 	bar.Finish()
 }

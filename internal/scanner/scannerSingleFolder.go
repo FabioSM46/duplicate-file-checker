@@ -5,13 +5,11 @@ import (
 	"duplicate-file-checker/internal/logger"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/schollz/progressbar/v3"
 )
 
-// ProcessSingleFolder scans the directory, hashes files, and identifies duplicates
 func ProcessSingleFolder(dirPath, hashMethod string, dryRun bool, logFormat string) {
 	// Scan directory for files
 	files, err := ScanDirectory(dirPath)
@@ -62,83 +60,86 @@ func ProcessSingleFolder(dirPath, hashMethod string, dryRun bool, logFormat stri
 		}
 	}
 
-	// Prepare a slice to collect log data with the `deleted` and `hash` keys
+	// Prepare a slice to collect log data
 	logData := []map[string]interface{}{}
 
-	// Handle file deletion and log the results
+	// List to hold duplicates that are going to be deleted
+	var duplicatesToDelete []string
+
+	// Flag to check if user confirmed deletion
+	var confirmDeletion bool
+
+	// Flag to check if any duplicates were found
+	var foundDuplicates bool
+
+	// Collect duplicates (excluding the first file, the original one)
+	for _, files := range duplicates {
+		if len(files) > 1 {
+			// Append duplicates (excluding the first one) to the deletion list
+			duplicatesToDelete = append(duplicatesToDelete, files[1:]...)
+		}
+	}
+
+	// Display only the duplicates that will be deleted
+	if len(duplicatesToDelete) > 0 {
+		fmt.Println("Duplicates found (these files will be deleted):")
+		for _, file := range duplicatesToDelete {
+			fmt.Printf("  %s\n", file)
+		}
+	}
+
+	// Ask for confirmation only once, after displaying duplicates
+	if !foundDuplicates {
+		fmt.Print("Do you want to delete all duplicates? (y/n): ")
+		var input string
+		_, err := fmt.Scanln(&input)
+		if err != nil {
+			fmt.Printf("Error reading input: %v\n", err)
+			return
+		}
+		if input == "y" || input == "Y" {
+			confirmDeletion = true
+		} else if input == "n" || input == "N" {
+			confirmDeletion = false
+		} else {
+			fmt.Println("Invalid input, skipping deletion.")
+			confirmDeletion = false
+		}
+		// Set the flag so we don't ask again
+		foundDuplicates = true
+	}
+
+	// If confirmed, proceed with deletion (except for the first one)
 	for hash, files := range duplicates {
 		if len(files) > 1 {
-			// If more than one file with the same hash, consider it a duplicate
-			fmt.Printf("Duplicate files found for hash: %s\n", hash)
-			for _, file := range files {
-				fmt.Printf("  %s\n", file)
-			}
-
-			// Prompt for file deletion if not in dry-run mode
-			if !dryRun {
-				// Ask user if they want to delete all or handle files individually
-				var deleteOption string
-				fmt.Printf("Do you want to delete these duplicates? (y/n/all): ")
-				fmt.Scanln(&deleteOption)
-				deleteOption = strings.ToLower(deleteOption)
-
-				// Determine which option the user chose
-				if deleteOption == "all" {
-					// Automatically delete all duplicates except the first one
-					for _, file := range files[1:] { // Skip the first file (original)
-						err := os.Remove(file)
-						if err != nil {
+			if confirmDeletion {
+				if !dryRun {
+					// Delete all duplicates except the first one (keep one copy)
+					for _, file := range files[1:] {
+						if err := os.Remove(file); err != nil {
 							fmt.Printf("Error deleting file %s: %v\n", file, err)
 						} else {
 							fmt.Printf("File %s deleted.\n", file)
 						}
 
-						// Log the deletion result with the hash included
+						// Log deletion with the hash value
 						logData = append(logData, map[string]interface{}{
 							"file":    file,
 							"deleted": true,
-							"hash":    hash,
+							"hash":    hash, // Using hash here for logging
 						})
 					}
 				} else {
-					// Handle individual deletions based on user input
-					for _, file := range files[1:] { // Skip the first file (original)
-						fmt.Printf("Do you want to delete %s? (y/n): ", file)
-						var input string
-						fmt.Scanln(&input)
-						deleted := false
-						if strings.ToLower(input) == "y" {
-							err := os.Remove(file)
-							if err != nil {
-								fmt.Printf("Error deleting file %s: %v\n", file, err)
-							} else {
-								fmt.Printf("File %s deleted.\n", file)
-								deleted = true
-							}
-						} else {
-							fmt.Printf("File %s kept.\n", file)
-						}
-
-						// Log the deletion result with the hash included
+					// Dry run: Display the files that would be deleted
+					fmt.Println("[Dry Run] The following files would be deleted:")
+					for _, file := range files[1:] {
+						fmt.Printf("  %s\n", file)
 						logData = append(logData, map[string]interface{}{
 							"file":    file,
-							"deleted": deleted,
-							"hash":    hash, // Add the hash here
+							"deleted": false,
+							"hash":    hash, // Using hash here for logging
 						})
 					}
-				}
-			} else {
-				// Dry run: Display the files that would be deleted
-				fmt.Println("[Dry Run] The following files would be deleted:")
-				for _, file := range files[1:] { // Skip the first file (original)
-					fmt.Printf("  %s\n", file)
-
-					// Log the dry run result with deleted set to false and hash included
-					logData = append(logData, map[string]interface{}{
-						"file":    file,
-						"deleted": false,
-						"hash":    hash, // Add the hash here
-					})
 				}
 			}
 		}
@@ -149,4 +150,5 @@ func ProcessSingleFolder(dirPath, hashMethod string, dryRun bool, logFormat stri
 
 	// Wait for progress bar to complete before exiting
 	bar.Finish()
+
 }

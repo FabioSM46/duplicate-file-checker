@@ -41,7 +41,7 @@ func HashFile(filePath string, hashMethod string) (string, error) {
 			return "", fmt.Errorf("error hashing file %s with SHA256: %v", filePath, err)
 		}
 		hashValue = hash.Sum(nil)
-	case "byte-by-byte":
+	case "bbb":
 		// For byte-by-byte, we can compare the file size and contents
 		content, err := io.ReadAll(file)
 		if err != nil {

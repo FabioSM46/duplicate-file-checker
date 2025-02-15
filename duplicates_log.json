@@ -1,17 +1,17 @@
 [
   {
-    "path": "test2/testFile1-1.txt",
-    "hash": "dc460da4ad72c482231e28e688e01f2778a88ce31a08826899d54ef7183998b5",
+    "path": "test/test2 (Copy).txt",
+    "hash": "617364320a",
     "deleted": true
   },
   {
-    "path": "test2/testFile2-1 (Copy).txt",
-    "hash": "57e56c77f18e47907ff13e52b8cd81b0a3ad9e5bff62d985f306f765e7bd37d4",
+    "path": "test/test3 (Copy 5).txt",
+    "hash": "617364330a",
     "deleted": true
   },
   {
-    "path": "test2/testFile3-1.txt",
-    "hash": "667f337422fe0d0abdadd4aec135f0601e43f495d6829137bdf20d6b047ea11c",
-    "deleted": false
+    "path": "test/test1 (Copy 3).txt",
+    "hash": "6173640a",
+    "deleted": true
   }
 ]
