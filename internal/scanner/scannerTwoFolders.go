@@ -5,132 +5,130 @@ import (
 	"duplicate-file-checker/internal/logger"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/schollz/progressbar/v3"
 )
 
-// ProcessTwoFolders checks for duplicate files between two directories
-func ProcessTwoFolders(folder1, folder2, hashMethod string, dryRun bool, logFormat string, maxWorkers int) {
+func ProcessTwoFolders(dir1, dir2, hashMethod string, dryRun bool, logFormat string, maxWorkers int) {
 	// Scan both directories for files
-	files1, err := ScanDirectory(folder1)
+	files1, err := ScanDirectory(dir1)
 	if err != nil {
-		fmt.Printf("Error scanning directory %s: %v\n", folder1, err)
+		fmt.Printf("Error scanning directory %s: %v\n", dir1, err)
 		return
 	}
-	files2, err := ScanDirectory(folder2)
+	files2, err := ScanDirectory(dir2)
 	if err != nil {
-		fmt.Printf("Error scanning directory %s: %v\n", folder2, err)
+		fmt.Printf("Error scanning directory %s: %v\n", dir2, err)
 		return
 	}
 
-	// Set up parallel processing
+	allFiles := append(files1, files2...)
+	resultChan := make(chan map[string]string, len(allFiles))
+
 	var wg sync.WaitGroup
-	var mu sync.Mutex // Mutex to safely write to maps in goroutines
+	workerPool := make(chan struct{}, maxWorkers)
+	bar := progressbar.NewOptions(len(allFiles), progressbar.OptionSetDescription("Hashing files"), progressbar.OptionSetWidth(50))
 
-	// Create progress bar
-	bar := progressbar.NewOptions(len(files1)+len(files2), progressbar.OptionSetDescription("Hashing files"), progressbar.OptionSetWidth(50))
+	// Hash files in parallel
+	for _, filePath := range allFiles {
+		wg.Add(1)
+		workerPool <- struct{}{}
 
-	// Hash maps to store hash -> file paths
-	hashMap1 := make(map[string][]string) // Now stores multiple file paths per hash
-	hashMap2 := make(map[string][]string) // Now stores multiple file paths per hash
+		go func(path string) {
+			defer wg.Done()
+			defer func() { <-workerPool }()
 
-	// Create a channel for sending tasks to workers
-	taskChan := make(chan string, len(files1)+len(files2)) // Channel with capacity to hold all tasks
-	resultChan := make(chan map[string][]string)           // Channel to store the final result (after all workers finish)
-
-	// Worker function that hashes files and updates the hash maps
-	worker := func() {
-		for filePath := range taskChan {
-			hashValue, err := hashing.HashFile(filePath, hashMethod)
+			hashValue, err := hashing.HashFile(path, hashMethod)
 			if err != nil {
-				fmt.Printf("Error hashing file %s: %v\n", filePath, err)
-				continue
+				fmt.Printf("Error hashing file %s: %v\n", path, err)
+				return
 			}
 
-			mu.Lock()
-			if strings.HasPrefix(filePath, folder1) {
-				hashMap1[hashValue] = append(hashMap1[hashValue], filePath)
-			} else {
-				hashMap2[hashValue] = append(hashMap2[hashValue], filePath)
-			}
-			mu.Unlock()
-
+			resultChan <- map[string]string{hashValue: path}
 			bar.Add(1)
-		}
-		wg.Done()
+		}(filePath)
 	}
 
-	// Start a fixed number of workers
-	for i := 0; i < maxWorkers; i++ {
-		go worker()
-	}
-
-	// Add tasks (files) to the channel for workers to process
-	wg.Add(len(files1) + len(files2)) // Wait for all files to be processed
-	for _, filePath := range files1 {
-		taskChan <- filePath
-	}
-	for _, filePath := range files2 {
-		taskChan <- filePath
-	}
-
-	// Close the task channel once all tasks have been sent
 	go func() {
-		wg.Wait() // Wait for all workers to finish
-		close(taskChan)
+		wg.Wait()
 		close(resultChan)
 	}()
 
-	// Wait for all workers to finish and aggregate the results (this step can be done after the workers finish)
-	// Process duplicates
-	logData := []map[string]interface{}{}
-	var deleteAllOption string
-	fmt.Printf("Do you want to delete all duplicates? (y/n): ")
-	fmt.Scanln(&deleteAllOption)
-	deleteAllOption = strings.ToLower(deleteAllOption)
-
-	// Keep track of deleted files to avoid double deletion
-	deletedFiles := make(map[string]bool)
-
-	// Handle duplicate detection and deletion if the user agrees
-	if deleteAllOption == "y" {
-		// Process duplicates in hashMap1 (first folder)
-		for hash, files1 := range hashMap1 {
-			if files2, exists := hashMap2[hash]; exists {
-				// Process each file in the first folder (files1) and check for duplicates in the second folder (files2)
-				for _, file1 := range files1 {
-					for _, file2 := range files2 {
-						// Only proceed if the duplicate from the second folder hasn't already been deleted
-						if _, alreadyDeleted := deletedFiles[file2]; !alreadyDeleted {
-							fmt.Printf("Duplicate found:\n  %s\n  %s\n", file1, file2)
-
-							if !dryRun {
-								// Delete the duplicate (file2) from the second folder
-								if err := os.Remove(file2); err == nil {
-									fmt.Printf("Deleted: %s\n", file2)
-									logData = append(logData, map[string]interface{}{"file": file2, "deleted": true, "hash": hash})
-									deletedFiles[file2] = true // Mark this file as deleted
-								} else {
-									fmt.Printf("Error deleting %s: %v\n", file2, err)
-								}
-							} else {
-								// Just log the duplicate files without deleting them in dry-run mode
-								logData = append(logData, map[string]interface{}{"file1": file1, "file2": file2, "deleted": false, "hash": hash})
-							}
-						}
-					}
-				}
-			}
+	hashMap := make(map[string][]string)
+	for result := range resultChan {
+		for hash, filePath := range result {
+			hashMap[hash] = append(hashMap[hash], filePath)
 		}
-	} else {
-		fmt.Println("Skipping deletion of duplicates.")
 	}
 
-	// Log results
-	logger.WriteLog(logData, logFormat)
+	// Identify duplicates between folders
+	var duplicatesToDelete []string
+	for _, files := range hashMap {
+		var inDir1, inDir2 []string
+		for _, file := range files {
+			if contains(files1, file) {
+				inDir1 = append(inDir1, file)
+			} else if contains(files2, file) {
+				inDir2 = append(inDir2, file)
+			}
+		}
+		if len(inDir1) > 0 && len(inDir2) > 0 {
+			duplicatesToDelete = append(duplicatesToDelete, inDir2...) // Keep files from dir1, delete from dir2
+		}
+	}
 
-	// Finish progress bar
+	logData := []map[string]interface{}{}
+
+	if len(duplicatesToDelete) > 0 {
+		fmt.Println("Duplicates found in second folder (these files will be deleted):")
+		for _, file := range duplicatesToDelete {
+			fmt.Printf("  %s\n", file)
+		}
+
+		fmt.Print("Do you want to delete all duplicates in the second folder? (y/n): ")
+		var input string
+		_, err := fmt.Scanln(&input)
+		if err != nil {
+			fmt.Printf("Error reading input: %v\n", err)
+			return
+		}
+
+		if input != "y" && input != "Y" {
+			fmt.Println("Skipping deletion.")
+			return
+		}
+
+		if !dryRun {
+			for _, file := range duplicatesToDelete {
+				if err := os.Remove(file); err != nil {
+					fmt.Printf("Error deleting file %s: %v\n", file, err)
+				} else {
+					fmt.Printf("Deleted: %s\n", file)
+				}
+				logData = append(logData, map[string]interface{}{"file": file, "deleted": true})
+			}
+		} else {
+			fmt.Println("[Dry Run] The following files would be deleted:")
+			for _, file := range duplicatesToDelete {
+				fmt.Printf("  %s\n", file)
+				logData = append(logData, map[string]interface{}{"file": file, "deleted": false})
+			}
+		}
+
+		logger.WriteLog(logData, logFormat)
+	} else {
+		fmt.Println("No duplicates found between the two folders.")
+	}
+
 	bar.Finish()
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }

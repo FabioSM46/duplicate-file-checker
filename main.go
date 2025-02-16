@@ -14,7 +14,7 @@ func main() {
 	logFormat := flag.String("log", "json", "Log format (json, csv, plain)")
 	flag.Parse()
 
-	maxWorkers := 1024 * 4
+	maxWorkers := 4
 
 	// Directory paths from command line arguments
 	args := flag.Args()
