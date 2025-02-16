@@ -14,6 +14,8 @@ func main() {
 	logFormat := flag.String("log", "json", "Log format (json, csv, plain)")
 	flag.Parse()
 
+	maxWorkers := 1024 * 4
+
 	// Directory paths from command line arguments
 	args := flag.Args()
 	if len(args) == 0 {
@@ -23,11 +25,11 @@ func main() {
 	if len(args) == 1 {
 		// Single folder mode
 		fmt.Printf("Scanning single folder: %s\n", args[0])
-		scanner.ProcessSingleFolder(args[0], *hashMethod, *dryRun, *logFormat)
+		scanner.ProcessSingleFolder(args[0], *hashMethod, *dryRun, *logFormat, maxWorkers)
 	} else if len(args) == 2 {
 		// Two folder mode
 		fmt.Printf("Comparing files between directories: %s and %s\n", args[0], args[1])
-		scanner.ProcessTwoFolders(args[0], args[1], *hashMethod, *dryRun, *logFormat)
+		scanner.ProcessTwoFolders(args[0], args[1], *hashMethod, *dryRun, *logFormat, maxWorkers)
 	} else {
 		fmt.Println("Error: Invalid number of arguments. Please provide one or two directory paths.")
 		os.Exit(1)

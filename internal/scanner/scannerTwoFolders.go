@@ -12,7 +12,7 @@ import (
 )
 
 // ProcessTwoFolders checks for duplicate files between two directories
-func ProcessTwoFolders(folder1, folder2, hashMethod string, dryRun bool, logFormat string) {
+func ProcessTwoFolders(folder1, folder2, hashMethod string, dryRun bool, logFormat string, maxWorkers int) {
 	// Scan both directories for files
 	files1, err := ScanDirectory(folder1)
 	if err != nil {
@@ -36,38 +36,56 @@ func ProcessTwoFolders(folder1, folder2, hashMethod string, dryRun bool, logForm
 	hashMap1 := make(map[string][]string) // Now stores multiple file paths per hash
 	hashMap2 := make(map[string][]string) // Now stores multiple file paths per hash
 
-	// Function to hash files and store results in the appropriate map
-	hashFiles := func(files []string, hashMap map[string][]string) {
-		for _, filePath := range files {
-			wg.Add(1)
-			go func(path string) {
-				defer wg.Done()
-				hashValue, err := hashing.HashFile(path, hashMethod)
-				if err != nil {
-					fmt.Printf("Error hashing file %s: %v\n", path, err)
-					return
-				}
+	// Create a channel for sending tasks to workers
+	taskChan := make(chan string, len(files1)+len(files2)) // Channel with capacity to hold all tasks
+	resultChan := make(chan map[string][]string)           // Channel to store the final result (after all workers finish)
 
-				mu.Lock()
-				hashMap[hashValue] = append(hashMap[hashValue], path) // Store all file paths for the same hash
-				mu.Unlock()
+	// Worker function that hashes files and updates the hash maps
+	worker := func() {
+		for filePath := range taskChan {
+			hashValue, err := hashing.HashFile(filePath, hashMethod)
+			if err != nil {
+				fmt.Printf("Error hashing file %s: %v\n", filePath, err)
+				continue
+			}
 
-				bar.Add(1)
-			}(filePath)
+			mu.Lock()
+			if strings.HasPrefix(filePath, folder1) {
+				hashMap1[hashValue] = append(hashMap1[hashValue], filePath)
+			} else {
+				hashMap2[hashValue] = append(hashMap2[hashValue], filePath)
+			}
+			mu.Unlock()
+
+			bar.Add(1)
 		}
+		wg.Done()
 	}
 
-	// Start hashing for both folders
-	hashFiles(files1, hashMap1)
-	hashFiles(files2, hashMap2)
+	// Start a fixed number of workers
+	for i := 0; i < maxWorkers; i++ {
+		go worker()
+	}
 
-	// Wait for all hashing goroutines to complete
-	wg.Wait()
+	// Add tasks (files) to the channel for workers to process
+	wg.Add(len(files1) + len(files2)) // Wait for all files to be processed
+	for _, filePath := range files1 {
+		taskChan <- filePath
+	}
+	for _, filePath := range files2 {
+		taskChan <- filePath
+	}
 
-	// Prepare a slice to collect log data
+	// Close the task channel once all tasks have been sent
+	go func() {
+		wg.Wait() // Wait for all workers to finish
+		close(taskChan)
+		close(resultChan)
+	}()
+
+	// Wait for all workers to finish and aggregate the results (this step can be done after the workers finish)
+	// Process duplicates
 	logData := []map[string]interface{}{}
-
-	// Ask if the user wants to delete all duplicates
 	var deleteAllOption string
 	fmt.Printf("Do you want to delete all duplicates? (y/n): ")
 	fmt.Scanln(&deleteAllOption)

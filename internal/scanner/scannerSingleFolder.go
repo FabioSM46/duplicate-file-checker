@@ -10,7 +10,7 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-func ProcessSingleFolder(dirPath, hashMethod string, dryRun bool, logFormat string) {
+func ProcessSingleFolder(dirPath, hashMethod string, dryRun bool, logFormat string, maxWorkers int) {
 	// Scan directory for files
 	files, err := ScanDirectory(dirPath)
 	if err != nil {
@@ -18,18 +18,25 @@ func ProcessSingleFolder(dirPath, hashMethod string, dryRun bool, logFormat stri
 		return
 	}
 
-	// Set up parallel processing
-	var wg sync.WaitGroup
+	// Create a buffered channel to hold results
 	resultChan := make(chan map[string]string, len(files))
+
+	// Set up a worker pool with maxWorkers
+	var wg sync.WaitGroup
+	workerPool := make(chan struct{}, maxWorkers) // Create a pool of maxWorkers workers
 
 	// Create progress bar
 	bar := progressbar.NewOptions(len(files), progressbar.OptionSetDescription("Hashing files"), progressbar.OptionSetWidth(50))
 
-	// Start hashing files in parallel
+	// Start workers for parallel file hashing
 	for _, filePath := range files {
 		wg.Add(1)
+		workerPool <- struct{}{} // Block if we have reached maxWorkers
+
 		go func(path string) {
 			defer wg.Done()
+			defer func() { <-workerPool }() // Release the worker after completion
+
 			// Calculate the hash for each file and send it to the result channel
 			hashValue, err := hashing.HashFile(path, hashMethod)
 			if err != nil {

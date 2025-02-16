@@ -19,7 +19,7 @@ type LogEntry struct {
 // WriteLog writes the duplicate information to a file based on the selected format.
 func WriteLog(logData []map[string]interface{}, logFormat string) {
 	// Create log file
-	logFile, err := os.Create("duplicates_log." + logFormat)
+	logFile, err := os.Create("./duplicates_log." + logFormat)
 	if err != nil {
 		log.Fatalf("Error creating log file: %v", err)
 	}
