@@ -93,6 +93,11 @@ func ProcessSingleFolder(dirPath, hashMethod string, dryRun bool, logFormat stri
 
 		if input != "y" && input != "Y" {
 			fmt.Println("Skipping deletion.")
+			// Log the found duplicates even if they are not deleted
+			for _, file := range duplicatesToDelete {
+				logData = append(logData, map[string]interface{}{"file": file, "deleted": false})
+			}
+			logger.WriteLog(logData, logFormat) // Ensure logs are always written
 			return
 		}
 
@@ -121,5 +126,5 @@ func ProcessSingleFolder(dirPath, hashMethod string, dryRun bool, logFormat stri
 	}
 
 	// Finish progress bar
-	bar.Finish()
+	bar.Clear()
 }
